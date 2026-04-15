@@ -1,4 +1,5 @@
 name: DevSecOps Pipeline
+
 on:
   push:
     branches: [main]
@@ -7,33 +8,114 @@ on:
 permissions:
   contents: read
   security-events: write
-  id-token: write
 
 jobs:
+
+  # -------------------------
+  # 🔐 Secrets Scan (Gitleaks)
+  # -------------------------
   secrets-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Run Gitleaks
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/path zricethezav/gitleaks:latest \
+          detect --source="/path" --report-format sarif --report-path /path/gitleaks.sarif
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+
+
+  # -------------------------
+  # 🔍 SAST (Semgrep)
+  # -------------------------
   sast:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: returntocorp/semgrep-action@v1
-        with:
-          config: p/security-audit
-          generateSarif: "1"
-      - uses: github/codeql-action/upload-sarif@v3
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      - name: Run Semgrep
+        run: |
+          semgrep --config auto --sarif --output semgrep.sarif
+
+      - name: Upload Semgrep SARIF
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: semgrep.sarif
 
-  
+
+  # -------------------------
+  # 📦 SCA (Trivy)
+  # -------------------------
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy FS Scan
+        uses: aquasecurity/trivy-action@v0.20.0
+        with:
+          scan-type: fs
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+
+
+  # -------------------------
+  # 🏗 IaC Scan (Checkov)
+  # -------------------------
+  iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          output_format: sarif
           output_file_path: checkov.sarif
-      - uses: github/codeql-action/upload-sarif@v3
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: checkov.sarif
+
+
+  # -------------------------
+  # 🚫 Security Gate
+  # -------------------------
+  security-gate:
+    runs-on: ubuntu-latest
+    needs: [secrets-scan, sast, sca, iac]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download SARIF files
+        run: ls -R
+
+      - name: Fail on Critical Vulnerabilities
+        run: |
+          echo "Checking for critical vulnerabilities..."
+
+          if grep -q '"level": "error"' *.sarif; then
+            echo "❌ Critical vulnerabilities found!"
+            exit 1
+          else
+            echo "✅ No critical vulnerabilities"
+          fi

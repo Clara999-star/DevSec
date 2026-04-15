@@ -1,7 +1,8 @@
-YAML
+
 permissions:
-contents: read
-security-events: write
+ contents: read
+ security-events: write
+
 name: DevSecOps Pipeline
 
 on:
